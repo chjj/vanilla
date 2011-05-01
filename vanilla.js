@@ -21,10 +21,12 @@ if (DEVELOPMENT) {
 var Request = http.IncomingMessage;
 var Response = http.ServerResponse;
 
+var _slice = [].slice;
+
 // ========== APPLICATION ========== //
 var Application = function(args) {
   if (!Array.isArray(args)) { 
-    return new Application(Array.prototype.slice.call(arguments)); 
+    return new Application(_slice.call(arguments)); 
   }
   if (!(this instanceof Application)) {
     return new Application(args);
@@ -40,8 +42,10 @@ var Application = function(args) {
     lang: 'en',
     halt: true
   };
-  this.env = DEVELOPMENT ? 'development' : 'production';
-  this.router = router(this);
+  this.env = DEVELOPMENT 
+    ? 'development' 
+    : 'production';
+  this._router = router(this);
   if (args.length > 0) {
     this.route.apply(this, args);
   }
@@ -63,9 +67,10 @@ Application.prototype.set = function(name, val) {
   if (arguments.length === 1) {
     return this.cfg[name];
   }
-  this.cfg[name] = val;
   if (typeof exports[name] === 'function') {
     this.route(exports[name].call(this, val));
+  } else {
+    this.cfg[name] = val;
   }
   return this;
 };
@@ -78,17 +83,17 @@ Application.prototype.listen = function(port, host) {
   process.nextTick(function() { 
     // if the app is mounted or vhosted,
     // it inherits its parent's server
-    if (app.parent) { 
-      app.port = app.parent.port; 
-      app.host = app.parent.host; 
-      app.server = app.parent.server; 
+    if (app._parent) { 
+      app.port = app._parent.port; 
+      app.host = app._parent.host; 
+      app.server = app._parent.server; 
       return; 
     }
     app.port = port || 8080;
     app.host = host || '127.0.0.1';
     (app.server = app.https 
-      ? require('https').createServer(app.https, listener(app))
-      : http.createServer(listener(app))
+      ? require('https').createServer(app.https, app._listener.bind(app))
+      : http.createServer(app._listener.bind(app))
     ).listen(app.port, app.host, function() {
       console.log(
         '\033[33mVanilla\033[39m - '
@@ -100,10 +105,52 @@ Application.prototype.listen = function(port, host) {
   return app;
 };
 
+// the heart of the request handling
+Application.prototype._listener = function(req, res) {
+  var app = this, i = 0, stack = app._router(req);
+  // need to push these onto the stack
+  // if there is a user error function
+  // they may need to use the middleware
+  if (!stack) { 
+    stack = [function() { 
+      res.error(405); 
+    }];
+  } else if (!stack.length) {
+    stack.push(function() { 
+      res.error(404); 
+    });
+  }
+  if (!app._parent) {
+    stack = __stack.concat(stack);
+  }
+  var next = function() { 
+    try {
+      if (stack[i]) {
+        stack[i++].call(app, req, res, next);
+      } else {
+        throw new 
+          Error('Bottom of stack, no handler.');
+      }
+    } catch(err) {
+      err && err.name; // hacky
+      res.error(500, DEVELOPMENT 
+        ? '<pre>' 
+          + (err.stack || (err + ''))
+              .replace(/</g, '&lt;').replace(/>/g, '&gt;')
+              .replace(/&/g, '&amp;').replace(/"/g, '&quot;')
+          + '</pre>'
+        : 'Sorry, an error occurred.'
+      );
+      console.log(err.stack || err + '');
+    }
+  };
+  (req.next = res.next = next)();
+};
+
 // mount an app, will route to the apps router
 // mounted apps shouldn't have a listener or internal stack
 Application.prototype.mount = function(route, app) {
-  app.parent = this;
+  app._parent = this;
   app.__route = route = '/' + route.replace(/^\/|\/$/g, '');
   var len = route.length, slots = route.split('/').length - 1;
   this.route(route + '*', function(req, res) {
@@ -116,15 +163,18 @@ Application.prototype.mount = function(route, app) {
     // but they CAN be according to the rfc
     if (/^([^:\/]+:)?\/\/[^\/]+$/.test(req.url)) req.url += '/';
     
-    req.pathname = req.pathname.slice(len) || '/';
+    req.uri.pathname = req.pathname = req.pathname.slice(len) || '/';
     req.path = req.path.slice(slots); 
-    app.router(req, res);
+    app._listener(req, res);
+    // could do app.server.emit('request', req, res);
+    // that way we could use closure pattern and make
+    // the listener actually private instead...
   });
 };
 
 // vhosting, examine the host header
 Application.prototype.vhost = function(host, app) {
-  app.parent = this;
+  app._parent = this;
   this.route(function(req, res, next) {
     // could do some actual pattern matching here
     // but it doesnt seem terribly necessary
@@ -135,7 +185,7 @@ Application.prototype.vhost = function(host, app) {
         app.__host = app.host;
         app.host = req.host;
       }
-      app.router(req, res);
+      app._listener(req, res);
     } else {
       next();
     }
@@ -268,19 +318,19 @@ Response.prototype.send = function(file, func) {
     }
     
     var stream = fs.createReadStream(file, range);
-    var _err = function() {
+    var error = function() {
       stream.destroy();
       if (this !== res.socket) {
-        res.socket.removeListener('error', _err);
+        res.socket.removeListener('error', error);
       }
       if (!res.finished) res.end();
       if (func) func.apply(res, arguments);
     };
-    stream.on('error', _err).on('end', function() {
-      res.socket.removeListener('error', _err);
+    stream.on('error', error).on('end', function() {
+      res.socket.removeListener('error', error);
       if (func) func.call(res);
     }).pipe(res);
-    res.socket.once('error', _err);
+    res.socket.on('error', error);
   });
 };
 
@@ -358,7 +408,7 @@ Response.prototype.error = function(code, body) {
       err = new Error(body || http.STATUS_CODES[code]);
       err.name = http.STATUS_CODES[code];
       err.code = code;
-      err = [err].concat(Array.prototype.slice.call(arguments, 2));
+      err = [err].concat(_slice.call(arguments, 2));
       return app.cfg.error.apply(res, err);
     }
     body = '<!doctype html>\n<title>Error</title>\n'
@@ -419,6 +469,9 @@ Response.prototype.header = function(name, val) {
 };
 
 // ========== REQUEST ========== //
+
+// get a header, referer will 
+// fall back to the app's url
 Request.prototype.header = function(name) {
   name = name.toLowerCase();
   if (name === 'referer' || name === 'referrer') {
@@ -429,14 +482,18 @@ Request.prototype.header = function(name) {
   return this.headers[name] || '';
 };
 
+// get a cookie, here to keep 
+// the req/res api consistent
 Request.prototype.cookie = function(name) {
   return this.cookies[name] || '';
 };
 
+// check the request content type
 Request.prototype.is = function(tag) {
   return this.type === mime(tag);
 };
 
+// quick and dirty way to test the accept header
 Request.prototype.accept = function(tag) {
   return RegExp('\\*/\\*|(^|,)' + mime(tag) + '(,|;|$)', 'i')
     .test(this.headers.accept);
@@ -444,8 +501,12 @@ Request.prototype.accept = function(tag) {
 
 // ========== ROUTING ========== //
 var router = (function() {
-  var methods = ['get', 'post', 'head', 'put', 'delete'];
+  var methods = [
+    'get', 'post', 'head', 
+    'put', 'delete', 'options'
+  ];
   
+  // compile an expression into a route object
   var compile = function(path, handlers) {
     if (!path) return { handlers: handlers };
     var route = { 
@@ -457,7 +518,7 @@ var router = (function() {
       route.regex = path;
       return route;
     }
-    route.regex = RegExp('^' + path 
+    route.regex = RegExp('^' + path
       .replace(/\[/g, '(?:')
       .replace(/\]/g, ')?')
       .replace(/\.(?!\+)/g, '\\.')
@@ -474,23 +535,7 @@ var router = (function() {
   return function router(app) {
     var routes = {};
     
-    var lookup = function(req) {
-      if (!routes[req.method]) return;
-      var route, cap, uri = req.pathname, handlers = [];
-      for (var i = 0, l = routes[req.method].length; i < l; i++) {
-        route = routes[req.method][i];
-        if (!route.path || (cap = uri.match(route.regex))) {
-          if (cap) { 
-            cap.slice(1).forEach(function(v, i) {
-              req.params[route.index[i]] = v;
-            });
-          }
-          handlers = handlers.concat(route.handlers);
-        }
-      }
-      return handlers;
-    };
-    
+    // add a route, ensure methods existence
     var add = function(method, route) {
       method = method.toUpperCase();
       if (!(method in routes)) {
@@ -499,16 +544,23 @@ var router = (function() {
       routes[method].push(route);
     };
     
+    // the actual function to designate routes
     app.route = function() { 
-      var app = this;
-      var method, path, handlers = [].slice.call(arguments);
-      if (typeof handlers[handlers.length-1] !== 'function') {
-        method = handlers.pop();
+      var app = this, handlers = [], route;
+      var method, path, args = _slice.call(arguments);
+      if (typeof args[args.length-1] === 'string') {
+        method = args.pop();
       }
-      if (typeof handlers[0] !== 'function') {
-        path = handlers.shift();
+      // string or regex
+      if (args[0].match || args[0].test) {
+        path = args.shift();
       }
-      var route = compile(path, handlers);
+      // hacky way to allow arrays to be input
+      args.map(function(val) {
+        handlers = handlers.concat(val);
+        return null;
+      });
+      route = compile(path, handlers);
       if (!method) {
         methods.forEach(function(method) {
           add(method, route);
@@ -522,29 +574,34 @@ var router = (function() {
       return this;
     };
     
+    // all the route functions
     methods.forEach(function(method) {
       app[method] = function() {
-        return this.route.apply(this, [].slice.call(arguments).concat(method));
+        return this.route.apply(this, _slice.call(arguments).concat(method));
       };
     });
     
-    return function(req, res) { 
-      var handlers, i = 0;
+    // do a route lookup to retrieve handlers
+    return function lookup(req) { 
+      if (!routes[req.method]) return;
+      
+      req.uri = req.uri || url.parse(req.url);
       req.params = {};
-      handlers = lookup(req);
-      if (!handlers) { 
-        res.error(405); // method not allowed
-      } else if (!handlers.length) {
-        res.error(404); // not found
-      } else {
-        var next = function() {
-          if (handlers[i]) {
-            handlers[i++].call(app, req, res, next);
-          }
-        };
-        req.next = res.next = next;
-        next();
+      
+      var route, cap, 
+          uri = req.uri.pathname, handlers = [],
+          i = 0, l = routes[req.method].length;
+      
+      for (; i < l; i++) {
+        route = routes[req.method][i];
+        if (!route.path || (cap = uri.match(route.regex))) {
+          if (cap) cap.slice(1).forEach(function(v, i) {
+            req.params[route.index[i]] = v;
+          });
+          handlers = handlers.concat(route.handlers);
+        }
       }
+      return handlers;
     };
   };
 })();
@@ -552,20 +609,18 @@ var router = (function() {
 // ========== MIDDLEWARE ========== //
 // - the internal middleware stack
 // - this is meant to be rather malleable
-var stack = [
+var __stack = exports.stack = [
   // ========== INITIALIZATION ========== //
   function init(req, res, next) {
     res.start = Date.now();
-    req.app = this;
-    res.app = this;
+    req.app = res.app = this;
     req.res = res; 
     res.req = req;
     next();
   },
   // ========== BASIC ========== //
   function basic(req, res, next) {
-    var uri = url.parse(req.url);
-    req.pathname = uri.pathname;
+    req.pathname = req.uri.pathname;
     req.path = (function() {
       var path = (req.pathname || '').trim()
         .replace(/^\/|\/$/g, '').split('/');
@@ -575,9 +630,9 @@ var stack = [
       });
     })();
     
-    req.host = uri.host || (req.headers.host || '').split(':')[0] || this.host;
+    req.host = req.uri.host || (req.headers.host || '').split(':')[0] || this.host;
     
-    req.query = qs.parse(uri.query, '&');
+    req.query = qs.parse(req.uri.query, '&');
     
     req.cookies = {};
     if (req.headers.cookie) {
@@ -603,7 +658,7 @@ var stack = [
     
     // maybe move these to getters
     req.xhr = !!(req.headers['x-requested-with'] === 'XMLHttpRequest');
-    //req.gzip = !!/gzip/i.test(req.headers['accept-encoding']);
+    req.gzip = !!/gzip/i.test(req.headers['accept-encoding']);
     
     next();
   },
@@ -644,32 +699,6 @@ var stack = [
     }
   }
 ];
-
-var listener = function(app) {
-  return function(req, res) {
-    var i = 0; 
-    try {
-      (function next() { 
-        if (stack[i]) {
-          stack[i++].call(app, req, res, next);
-        } else {
-          app.router(req, res);
-        }
-      })();
-    } catch(err) {
-      err && err.name; // hacky
-      res.error(500, DEVELOPMENT 
-        ? '<pre>' 
-          + (err.stack || (err + ''))
-              .replace(/</g, '&lt;').replace(/>/g, '&gt;')
-              .replace(/&/g, '&amp;').replace(/"/g, '&quot;')
-          + '</pre>'
-        : 'Sorry, an error occurred.'
-      );
-      console.log(err.stack || err + '');
-    }
-  };
-};
 
 var __break = {};
 'type,stack,name,message,code,errno,toString,inspect'.split(',').forEach(function(s) {
@@ -768,15 +797,18 @@ exports.sessions = function(options) {
       life = options.life || 2 * 7 * 24 * 60 * 60 * 1000, 
       limit = options.limit || 500,
       dir = options.dir || __dirname + '/.sessions';
+  
   if (!require('path').existsSync(dir)) {
     fs.mkdirSync(dir, 0777);
   }
   total = fs.readdirSync(dir).length;
+  
   return function(req, res, next) {
     if (total > limit) { 
       fs.readdir(dir, function(err, list) {
         if (err || !list) return; 
         list.forEach(function(id) {
+          if (lock[id]) return;
           lock[id] = {};
           fs.unlink(dir + '/' + id, function() {
             delete lock[id];
@@ -799,17 +831,19 @@ exports.sessions = function(options) {
       var _end = res.end;
       return function() {
         res.end = _end;
-        if (!lock[id]) {
-          lock[id] = req.session;
-          fs.writeFile(
-            dir + '/' + id, 
-            JSON.stringify(req.session), 
-            function(err) {
-              delete lock[id];
-            }
-          );
-        }
+        lock[id] = req.session;
+        fs.writeFile(
+          dir + '/' + id, 
+          JSON.stringify(req.session), 
+          function(err) {
+            delete lock[id];
+            //_end.apply(res, arguments);
+          }
+        );
         return _end.apply(res, arguments);
+        //return true; 
+        // return !res.output.length;
+        //return res.write.apply(res, arguments);
       };
     })();
     
@@ -858,7 +892,7 @@ View.prototype = {
   },
   inherits: function(name) {
     if (arguments.length > 1) {
-      this._parent = this._parent.concat(Array.prototype.slice.call(arguments));
+      this._parent = this._parent.concat(_slice.call(arguments));
     } else {
       this._parent.push(name);
     }
@@ -892,10 +926,12 @@ View.prototype = {
   }
 };
 
+// aliases, still not sure on the names
 View.prototype.subject = View.prototype.name;
 View.prototype.add = View.prototype.inherits;
 View.prototype.remove = View.prototype.drop;
 
+// add .view to the response object
 Response.prototype.__defineGetter__('view', function() {
   if (!this._view) {
     var res = this;
@@ -908,13 +944,14 @@ Response.prototype.__defineGetter__('view', function() {
   return this._view;
 });
 
+// alias for res.view.render
 Response.prototype.__defineGetter__('render', function() {
   return this.view.render;
 });
 
 Application.prototype._compile = (function() {
   var _inherits = function() { 
-    return Array.prototype.slice.call(arguments).map(function(name) {
+    return _slice.call(arguments).map(function(name) {
       return '-inherits ' + name + '-';
     }).join(' ');
   };
@@ -946,45 +983,6 @@ Application.prototype._compile = (function() {
     return app._tmp[name];
   };
 })();
-
-// the other compile function: this method adds only a local function
-// and doesnt have to perform regexes on the output
-/*Application.prototype._compile = (function() {
-  var _dummy = function() { return ''; };
-  var _inherits = function() { 
-    throw { parent: Array.prototype.slice.call(arguments) };
-  };
-  return function(name) {
-    var app = this;
-    if (!app._views) {
-      app._views = (app.cfg.views || app.cfg.root)
-        .replace(/\/+$/, '') + '/';
-    }
-    if (!app._tmp) app._tmp = {};
-    // add template inheritence functionality by doing hacksy things
-    if (!app._tmp[name]) {
-      var func = app.cfg.template(fs.readFileSync(app._views + name, 'utf-8'));
-      app._tmp[name] = function(locals) {
-        var out;
-        if (!locals.partial) locals.partial = app.partial.bind(app);
-        locals.inherits = _inherits;
-        try {
-          out = func(locals); // locals.inherits will throw its arguments when called
-        } catch(e) { // error caught, is it an inherits call?
-          if (!e.parent) throw e; // if its a regular error, throw it
-          locals.inherits = _dummy;
-          out = func(locals); // re-execute with dummy in place
-          while (e.parent.length) { // cycle throw the inherited templates and execute them
-            locals.body = locals.content = out;
-            out = app._compile(e.parent.pop())(locals);
-          }
-        }
-        return out;
-      };
-    }
-    return app._tmp[name];
-  };
-})();*/
 
 Application.prototype.partial = 
 Application.prototype.show = function(name, locals) {

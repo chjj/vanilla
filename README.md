@@ -2,6 +2,10 @@
 __Vanilla__ is another Sinatra-like framework. This is an early release, 
 with polishing yet to be done. Things will change periodically.
 
+## Install
+
+    npm install vanilla
+
 ## Usage
 
     var app = require('vanilla').listen(80);
