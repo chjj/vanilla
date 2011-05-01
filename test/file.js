@@ -1,1 +1,1 @@
-var Vanilla = require('../vanilla');var app = Vanilla.listen(8080);app.get('/', function(req, res, next) {  res.send(__dirname + '/file.js');});
+var Vanilla = require('../vanilla');var app = Vanilla.listen(8080); app.get('/', function(req, res, next) {  res.send(__dirname + '/file.js');});

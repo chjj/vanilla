@@ -3,7 +3,7 @@
 
 process.on('uncaughtException', function(err) {
   if (typeof err === 'function') {
-    err();
+    err(); 
   } else { 
     console.log(err.stack || err + '');
     process.exit(1);

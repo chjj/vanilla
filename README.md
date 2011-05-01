@@ -182,17 +182,17 @@ number of arguments for the handlers that will be bound to the route.
 
 Example:
 
-    app.route(function(req, res, next) {
+    app.route(function(req, res) {
       console.log('this is called for every request, no matter what.');
-      next();
+      res.pass();
     });
 
-    app.route('/', function(req, res, next) {
+    app.route('/', function(req, res) {
       console.log('this will get called for every request to "/".');
-      next();
-    }, function(req, res, next) {
+      res.pass();
+    }, function(req, res) {
       console.log('so will this.');
-      next();
+      res.pass();
     });
 
     app.get('/', function(req, res) {
@@ -225,6 +225,7 @@ Or you can pass in an options object:
 `app.set('sessions', { life: 24 * 60 * 60 * 1000, limit: 500 })`
 
 A user's session will get written to disk after 2 minutes of inactivity.
+(I'm still uncertain how this will be done, it may change slightly.)
 
 #### Why use the filesystem?
 
@@ -250,7 +251,7 @@ These are both available on the response object:
     // the above could also be accomplished with "return res.error(404);"
 
     app.get('/*', function(req, res) {
-      res.mime('.txt');
+      res.type('.txt');
       res.pass();
       console.log('this never gets called');
       res.end('this never gets called');
@@ -337,6 +338,7 @@ to make them more usable. Much of which is documented below.
     response should be stale. Otherwise, `res.modified` and `res.etag` 
     will send a 304 and return true. `if (res.etag(time)) return;`. 
     True by default.
+  - `sessions`: Enable sessions.
   - Anything else, accessible from `app.cfg`.
 - `Application::vhost(host, app)` 
 - `Application::mount(route, app)`
@@ -366,10 +368,6 @@ to make them more usable. Much of which is documented below.
 - `Response::view.render(name[, locals])` - The same thing as `View.show`, 
   except it serves a response.
 
-- `Response::buffer(callback)` - Buffer the response's output. `callback` 
-  receives one argument: `data`, which is a Buffer of all data that was 
-  written to the response up until `Response.end` was called. Be careful 
-  with this.
 - `Response::error(code[, body, ...])` - Responds with with an HTTP error.
 - `Response::cookie(name, val[, options/expires])` - Get/Set a cookie. Clear a 
    cookie by setting `val` to null.
@@ -396,7 +394,6 @@ to make them more usable. Much of which is documented below.
 - `Response::header(name[, val])` - Get or set a header.
 - `Response::next()` - Call the next handler.
 - `Response::view` - See above.
-- `Response::type` - The current mime type of the response.
 
 - `Request::is(tag)` - Check a request's mime type by file extension or type.
 - `Request::header(name)` - Get a request header, referer will fallback to the 
