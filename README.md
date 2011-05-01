@@ -4,7 +4,7 @@ with polishing yet to be done. Things will change periodically.
 
 ## Install
 
-    npm install vanilla
+    $ npm install vanilla
 
 ## Usage
 

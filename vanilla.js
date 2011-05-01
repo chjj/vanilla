@@ -24,9 +24,10 @@ var Response = http.ServerResponse;
 var _slice = [].slice;
 
 // ========== APPLICATION ========== //
-var Application = function(args) {
+var Application = function() {
+  var args = arguments[0];
   if (!Array.isArray(args)) { 
-    return new Application(_slice.call(arguments)); 
+    args = _slice.call(arguments); 
   }
   if (!(this instanceof Application)) {
     return new Application(args);
@@ -135,7 +136,7 @@ Application.prototype._listener = function(req, res) {
       err && err.name; // hacky
       res.error(500, DEVELOPMENT 
         ? '<pre>' 
-          + (err.stack || (err + ''))
+          + (err.stack || err + '')
               .replace(/</g, '&lt;').replace(/>/g, '&gt;')
               .replace(/&/g, '&amp;').replace(/"/g, '&quot;')
           + '</pre>'
