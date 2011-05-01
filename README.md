@@ -1,6 +1,6 @@
 # Vanilla - a framework for Node
 __Vanilla__ is another Sinatra-like framework. This is an early release, 
-with polishing yet to be done.
+with polishing yet to be done. Things will change periodically.
 
 ## Usage
 
@@ -60,22 +60,26 @@ This is completely optional and unnecessary in most situations.
 This is what the templates in the above example might look like:
 
 `layout.html`:
+
     <h1><%= title %></h1>
     <%= body %>
     <footer>Bye world!</footer>
 
 `section.html`:
+
     <section>
       <h2><%= title %></h2>
       <%= body %>
     </section>
 
 `message.html`:
+
       <div>
         <p><%= content %></p>
       </div>
 
 Thus rendering the final view:
+
     <h1>Look, a view.</h1>
     <section>
       <h2>Look, a view.</h2>
@@ -101,6 +105,7 @@ We can also define inheritence within the template itself
 by using a simple statement:
 
 `message.html`:
+
     <%= inherits("layout.html", "section.html"); %>
     <div>
       <p><%= content %></p>
