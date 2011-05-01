@@ -1,0 +1,1 @@
+var Vanilla = require('../vanilla');var app = Vanilla.listen(8080);var app2 = new Vanilla();app.vhost('127.0.0.1', app2);app2.get('/', function(req, res, next) {  res.serve('oh my, now were vhosted');});app.get('/', function(req, res, next) {  res.serve('hello world');});

@@ -1,0 +1,7 @@
+{
+  "name": "vanilla",
+  "description": "a node framework",
+  "author": "Christopher Jeffrey",
+  "version": "0.0.1",
+  "main": "./vanilla.js"
+}
