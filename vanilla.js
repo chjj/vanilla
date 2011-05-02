@@ -389,9 +389,10 @@ Response.prototype.redirect = function(path, code) {
   res.statusCode = +code;
   res.setHeader('Location', path);
   if (req.method !== 'HEAD') {
-    res.type('text/html');
     body = '<!doctype html><title>Redirecting</title>\n'
            + '<a href="' + path + '">' + path + '</a>';
+    res.setHeader('Content-Type', 'text/html; charset=' + app.cfg.charset);
+    res.setHeader('Content-Length', Buffer.byteLength(body));
   }
   res.end(body);
 };
@@ -631,7 +632,9 @@ var __stack = exports.stack = [
       });
     })();
     
-    req.host = req.uri.host || (req.headers.host || '').split(':')[0] || this.host;
+    req.host = req.uri.hostname 
+      || (req.headers.host || '').split(':')[0] 
+      || this.host;
     
     req.query = qs.parse(req.uri.query, '&');
     
@@ -701,6 +704,7 @@ var __stack = exports.stack = [
   }
 ];
 
+// ========== HALT & PASS ========== //
 var __break = {};
 'type,stack,name,message,code,errno,toString,inspect'.split(',').forEach(function(s) {
   __break.__defineGetter__(s, function() { throw this; });
@@ -794,7 +798,7 @@ var mime = (function() {
 // ========== SESSIONS ========== //
 exports.sessions = function(options) {
   if (typeof options !== 'object') options = {};
-  var lock = {}, total,
+  var total = 0,
       life = options.life || 2 * 7 * 24 * 60 * 60 * 1000, 
       limit = options.limit || 500,
       dir = options.dir || __dirname + '/.sessions';
@@ -809,47 +813,37 @@ exports.sessions = function(options) {
       fs.readdir(dir, function(err, list) {
         if (err || !list) return; 
         list.forEach(function(id) {
-          if (lock[id]) return;
-          lock[id] = {};
-          fs.unlink(dir + '/' + id, function() {
-            delete lock[id];
-            total--;
-          });
+          fs.unlink(dir + '/' + id);
         });
       });
+      total = 0;
     }
     
-    var id = req.cookies['sid'];
-    if (!id) {
-      id = '----'.replace(/-/g, function() {
-        return Math.random().toString(36).slice(2, 10);
-      });
-      res.cookie('sid', id, {expires: life});
-      total++;
-    }
+    var id = req.cookies.sid;
     
     res.end = (function() {
       var _end = res.end;
       return function() {
         res.end = _end;
-        lock[id] = req.session;
         fs.writeFile(
           dir + '/' + id, 
           JSON.stringify(req.session), 
           function(err) {
-            delete lock[id];
-            //_end.apply(res, arguments);
+            res.end();
           }
         );
-        return _end.apply(res, arguments);
-        //return true; 
-        // return !res.output.length;
-        //return res.write.apply(res, arguments);
+        return res.write.apply(res, arguments);
       };
     })();
     
-    if (lock[id]) {
-      req.session = res.session = lock[id];
+    if (!id) {
+      total++;
+      // warning: not cryptographically strong
+      id = '----'.replace(/-/g, function() {
+        return Math.random().toString(36).slice(2, 10);
+      });
+      res.cookie('sid', id, {expires: life});
+      req.session = res.session = {};
       return next();
     }
     
@@ -950,6 +944,8 @@ Response.prototype.__defineGetter__('render', function() {
   return this.view.render;
 });
 
+// we could do the "inherits" declarations slightly
+// differently, but regexes seem to work on all engines
 Application.prototype._compile = (function() {
   var _inherits = function() { 
     return _slice.call(arguments).map(function(name) {
