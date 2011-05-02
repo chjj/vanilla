@@ -824,15 +824,18 @@ exports.sessions = function(options) {
     res.end = (function() {
       var _end = res.end;
       return function() {
+        var args = _slice.call(arguments);
         res.end = _end;
         fs.writeFile(
           dir + '/' + id, 
-          JSON.stringify(req.session), 
+          JSON.stringify(req.session || {}), 
           function(err) {
-            res.end();
+            res.end.apply(res, args);
           }
         );
-        return res.write.apply(res, arguments);
+        // could call .write here to get an accurate 
+        // return, but it has some problems
+        return true;
       };
     })();
     
