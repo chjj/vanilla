@@ -68,10 +68,9 @@ Application.prototype.set = function(name, val) {
   if (arguments.length === 1) {
     return this.cfg[name];
   }
-  if (typeof exports[name] === 'function') {
+  this.cfg[name] = val;
+  if (typeof exports[name] === 'function' && val) {
     this.route(exports[name].call(this, val));
-  } else {
-    this.cfg[name] = val;
   }
   return this;
 };
@@ -229,11 +228,14 @@ Response.prototype.serve = function(data, func) {
   }
   res.setHeader('Content-Length', buff ? data.length : Buffer.byteLength(data));
   res.setHeader('Content-Language', res.app.cfg.lang);
+  
   // make sure to minimize the IE problem, force chrome frame
   res.setHeader('X-UA-Compatible', 'IE=Edge,chrome=1');
   
   var ret = res.end(req.method !== 'HEAD' && data);
   
+  // check the return value to 
+  // execute the callback
   if (func) {
     if (ret === false) {
       res.socket.once('drain', func);
@@ -319,19 +321,18 @@ Response.prototype.send = function(file, func) {
     }
     
     var stream = fs.createReadStream(file, range);
-    var error = function() {
-      stream.destroy();
-      if (this !== res.socket) {
-        res.socket.removeListener('error', error);
-      }
-      if (!res.finished) res.end();
+    var end = function(err) {
+      if (err) stream.destroy();
+      res.socket.removeListener('error', end);
+      res.end();
       if (func) func.apply(res, arguments);
     };
-    stream.on('error', error).on('end', function() {
-      res.socket.removeListener('error', error);
-      if (func) func.call(res);
-    }).pipe(res);
-    res.socket.on('error', error);
+    
+    stream
+      .on('error', end)
+      .on('end', end)
+      .pipe(res, { end: false });
+    res.socket.on('error', end);
   });
 };
 
@@ -389,7 +390,7 @@ Response.prototype.redirect = function(path, code) {
   res.statusCode = +code;
   res.setHeader('Location', path);
   if (req.method !== 'HEAD') {
-    body = '<!doctype html><title>Redirecting</title>\n'
+    body = '<!doctype html>\n<title>Redirecting</title>\n'
            + '<a href="' + path + '">' + path + '</a>';
     res.setHeader('Content-Type', 'text/html; charset=' + app.cfg.charset);
     res.setHeader('Content-Length', Buffer.byteLength(body));
@@ -399,15 +400,14 @@ Response.prototype.redirect = function(path, code) {
 
 // send an http error code with an optional body
 Response.prototype.error = function(code, body) {
-  var res = this, app = res.app, err;
+  var res = this, app = res.app;
   if (res.finished) return;
-  code = code || 500;
-  res.statusCode = +code;
+  res.statusCode = code = +code || 500;
   // make sure its not a 304 (not modified) or 204 (no content)
   // these response codes should not have a body
-  if (code != 204 && code != 304 && code > 199) {
+  if (code !== 204 && code !== 304 && code > 199) {
     if (app && app.cfg.error) {
-      err = new Error(body || http.STATUS_CODES[code]);
+      var err = new Error(body || http.STATUS_CODES[code]);
       err.name = http.STATUS_CODES[code];
       err.code = code;
       err = [err].concat(_slice.call(arguments, 2));
@@ -497,8 +497,11 @@ Request.prototype.is = function(tag) {
 
 // quick and dirty way to test the accept header
 Request.prototype.accept = function(tag) {
-  return RegExp('\\*/\\*|(^|,)' + mime(tag) + '(,|;|$)', 'i')
-    .test(this.headers.accept);
+  return RegExp(
+    '\\*/\\*|(^|,)' 
+    + mime(tag).replace(/\+/g, '\\+') 
+    + '(,|;|$)', 
+  'i').test(this.headers.accept);
 };
 
 // ========== ROUTING ========== //
@@ -796,16 +799,21 @@ var mime = (function() {
 })();
 
 // ========== SESSIONS ========== //
-exports.sessions = function(options) {
-  if (typeof options !== 'object') options = {};
-  var total = 0,
-      life = options.life || 2 * 7 * 24 * 60 * 60 * 1000, 
-      limit = options.limit || 500,
-      dir = options.dir || __dirname + '/.sessions';
-  
-  if (!require('path').existsSync(dir)) {
-    fs.mkdirSync(dir, 0777);
+exports.sessions = function(opt) {
+  if (typeof opt !== 'object') {
+    opt = {};
   }
+  
+  var total = 0,
+      life = opt.life || 2 * 7 * 24 * 60 * 60 * 1000, 
+      limit = opt.limit || 500,
+      dir = opt.dir || __dirname + '/.sessions';
+  
+  // check for the .sessions dir
+  if (!require('path').existsSync(dir)) {
+    fs.mkdirSync(dir, 0666);
+  }
+  
   total = fs.readdirSync(dir).length;
   
   return function(req, res, next) {
@@ -828,7 +836,7 @@ exports.sessions = function(options) {
         res.end = _end;
         fs.writeFile(
           dir + '/' + id, 
-          JSON.stringify(req.session || {}), 
+          JSON.stringify(req.session), 
           function(err) {
             res.end.apply(res, args);
           }
@@ -846,15 +854,15 @@ exports.sessions = function(options) {
         return Math.random().toString(36).slice(2, 10);
       });
       res.cookie('sid', id, {expires: life});
-      req.session = res.session = {};
+      req.session = {};
       return next();
     }
     
     fs.readFile(dir + '/' + id, 'utf-8', function(err, data) {
       try {
-        req.session = res.session = JSON.parse(data);
+        req.session = JSON.parse(data);
       } catch(e) {
-        req.session = res.session = {};
+        req.session = {};
       }
       next();
     });
@@ -865,7 +873,7 @@ exports.sessions = function(options) {
 var View = function(app, name) {
   this._name = name;
   this._app = app;
-  this._parent = [];
+  this._chain = [];
   this.locals = {};
 };
 
@@ -890,15 +898,15 @@ View.prototype = {
   },
   inherits: function(name) {
     if (arguments.length > 1) {
-      this._parent = this._parent.concat(_slice.call(arguments));
+      this._chain = this._chain.concat(_slice.call(arguments));
     } else {
-      this._parent.push(name);
+      this._chain.push(name);
     }
     return this;
   },
   drop: function(name) {
-    var i = this._parent.indexOf(name);
-    if (i !== -1) this._parent.splice(i, 1);
+    var i = this._chain.indexOf(name);
+    if (i !== -1) this._chain.splice(i, 1);
     return this;
   },
   name: function(name) {
@@ -906,28 +914,24 @@ View.prototype = {
     return this;
   },
   show: function(name, loc) {
-    if (!loc) { loc = name; name = undefined; }
-    if (name) this._name = name;
-    if (!this._name && this._parent.length) {
-      this._name = this._parent.pop();
+    if (typeof name === 'object') { 
+      loc = name; 
+      name = undefined; 
     }
-    if (loc) {
-      for (var k in loc) this.locals[k] = loc[k];
+    if (name = name || this._name) {
+      this._chain.push(name);
+    }
+    if (loc) for (var k in loc) {
+      this.locals[k] = loc[k];
     }
     this.locals.partial = this._app.partial.bind(this._app);
-    var out = this._app._compile(this._name)(this.locals);
-    while (this._parent.length) {
-      this.locals.body = this.locals.content = out;
-      out = this._app._compile(this._parent.pop())(this.locals); 
+    var i = this._chain.length;
+    while (i--) {
+      this.locals.body = this._app._compile(this._chain[i])(this.locals); 
     }
-    return out;
+    return this.locals.body;
   }
 };
-
-// aliases, still not sure on the names
-View.prototype.subject = View.prototype.name;
-View.prototype.add = View.prototype.inherits;
-View.prototype.remove = View.prototype.drop;
 
 // add .view to the response object
 Response.prototype.__defineGetter__('view', function() {
@@ -952,7 +956,7 @@ Response.prototype.__defineGetter__('render', function() {
 Application.prototype._compile = (function() {
   var _inherits = function() { 
     return _slice.call(arguments).map(function(name) {
-      return '-inherits ' + name + '-';
+      return '--' + 'inherits ' + name + '--';
     }).join(' ');
   };
   return function(name) {
@@ -961,30 +965,31 @@ Application.prototype._compile = (function() {
       app._views = (app.cfg.views || app.cfg.root)
         .replace(/\/+$/, '') + '/';
     }
-    if (!app._tmp) app._tmp = {};
-    // add template inheritence functionality by doing some parsing post-compilation
-    if (!app._tmp[name]) {
+    if (!app._cache) app._cache = {};
+    // add template inheritence functionality 
+    // by doing some parsing post-compilation
+    if (!app._cache[name]) {
       var func = app.cfg.template(fs.readFileSync(app._views + name, 'utf-8'));
-      app._tmp[name] = function(locals) {
-        if (!locals.partial) locals.partial = app.partial.bind(app);
+      app._cache[name] = function(locals) {
         if (!locals.inherits) locals.inherits = _inherits;
         var out = func(locals), parent = [];
-        out = out.replace(/\s*-\s*inherits\s*([^-\n]+?)\s*-[\t\x20]*[\r\n]*/gi, function(__, file) {
-          parent.push(file);
+        out = out.replace(/\s*--\s*inherits\s*([^\n]+?)\s*--[\t\x20]*[\r\n]*/gi, function(__, name) {
+          parent.push(name);
           return '';
         });
         while (parent.length) {
-          locals.body = locals.content = out;
+          locals.body = out;
           out = app._compile(parent.pop())(locals); 
         }
         return out;
       };
     }
-    return app._tmp[name];
+    return app._cache[name];
   };
 })();
 
 Application.prototype.partial = 
+Application.prototype.render = 
 Application.prototype.show = function(name, locals) {
   return this._compile(name)(locals);
 };
