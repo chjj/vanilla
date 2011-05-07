@@ -145,7 +145,7 @@ Application.prototype.mount = function(route, app) {
 // vhosting, examine the host header
 Application.prototype.vhost = function(host, app) {
   app._parent = this;
-  this.route(function(req, res, next) {
+  this.route(function(req, res) {
     // could do some actual pattern matching here
     // but it doesnt seem terribly necessary
     if (req.host.indexOf(host) === 0) {
@@ -157,7 +157,7 @@ Application.prototype.vhost = function(host, app) {
       }
       app._router(req, res);
     } else {
-      next();
+      res.next();
     }
   });
 };
