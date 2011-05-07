@@ -7,19 +7,22 @@ var http = require('http'),
     qs = require('querystring');
 
 // dev mode disables caching
-var DEVELOPMENT = !!(
-  process.env.DEV 
-  || process.env.DEVELOPMENT 
-  || process.argv.indexOf('-dev') !== -1
+var DEVELOPMENT = (
+  process.argv.indexOf('-dev') !== -1
   || process.env.NODE_ENV === 'development'
-); 
+) && 'development';
+
+var TEST = (
+  process.argv.indexOf('-test') !== -1 
+  || process.env.NODE_ENV === 'test'
+) && 'test';
 
 if (DEVELOPMENT) {
   console.log('\033[33m -- Starting in development mode. -- \033[39m');
 }
 
-var Request = http.IncomingMessage;
-var Response = http.ServerResponse;
+var Request = http.IncomingMessage,
+    Response = http.ServerResponse;
 
 var _slice = [].slice;
 
@@ -40,16 +43,17 @@ var Application = function() {
     views: process.cwd() + '/views',
     charset: 'utf-8',
     limit: 30 * 1024,
-    lang: 'en',
-    halt: true
+    lang: 'en'
   };
-  this.env = DEVELOPMENT 
-    ? 'development' 
-    : 'production';
+  this.env = DEVELOPMENT || TEST || 'production';
+  this._listener = listener(this);
   this._router = router(this);
   if (args.length > 0) {
     this.route.apply(this, args);
   }
+  this.server = this.https 
+    ? require('https').createServer(this.https, this._listener)
+    : http.createServer(this._listener);
 };
 
 module.exports = exports = Application;
@@ -59,18 +63,30 @@ Application.listen = function() {
   return Application.prototype.listen.apply(new Application(), arguments);
 };
 
-Application.prototype.__defineGetter__('dev', function() {
-  return !!(this.env === 'development');
-});
+Application.prototype.config = function(env, func) {
+  if (!func || env === this.env) (func || env)();
+};
 
 // configuration - also sets internal middleware
 Application.prototype.set = function(name, val) {
   if (arguments.length === 1) {
     return this.cfg[name];
   }
-  this.cfg[name] = val;
-  if (typeof exports[name] === 'function' && val) {
-    this.route(exports[name].call(this, val));
+  switch (name) {
+    case 'public':
+    case 'static':
+      var func = function(req, res) {
+        res.send(val + req.pathname);
+      };
+      fs.readdirSync(val).forEach(function(file) {
+        this.get('/' + file + '*', func);
+      }, this);
+      break;
+    case 'sessions':
+      this.route(sessions(val));
+      break;
+    default:
+      this.cfg[name] = val;
   }
   return this;
 };
@@ -83,7 +99,7 @@ Application.prototype.listen = function(port, host) {
   process.nextTick(function() { 
     // if the app is mounted or vhosted,
     // it inherits its parent's server
-    if (app._parent) { 
+    if (app._parent) {
       app.port = app._parent.port; 
       app.host = app._parent.host; 
       app.server = app._parent.server; 
@@ -91,10 +107,7 @@ Application.prototype.listen = function(port, host) {
     }
     app.port = port || 8080;
     app.host = host || '127.0.0.1';
-    (app.server = app.https 
-      ? require('https').createServer(app.https, app._listener.bind(app))
-      : http.createServer(app._listener.bind(app))
-    ).listen(app.port, app.host, function() {
+    app.server.listen(app.port, app.host, function() {
       console.log(
         '\033[33mVanilla\033[39m - '
         + 'Listening on port: ' 
@@ -105,70 +118,27 @@ Application.prototype.listen = function(port, host) {
   return app;
 };
 
-// the heart of the request handling
-Application.prototype._listener = function(req, res) {
-  var app = this, i = 0, stack = app._router(req);
-  // need to push these onto the stack
-  // if there is a user error function
-  // they may need to use the middleware
-  if (!stack) { 
-    stack = [function() { 
-      res.error(405); 
-    }];
-  } else if (!stack.length) {
-    stack.push(function() { 
-      res.error(404); 
-    });
-  }
-  if (!app._parent) {
-    stack = __stack.concat(stack);
-  }
-  var next = function() { 
-    try {
-      if (stack[i]) {
-        stack[i++].call(app, req, res, next);
-      } else {
-        throw new 
-          Error('Bottom of stack, no handler.');
-      }
-    } catch(err) {
-      err && err.name; // hacky
-      res.error(500, DEVELOPMENT 
-        ? '<pre>' 
-          + (err.stack || err + '')
-              .replace(/</g, '&lt;').replace(/>/g, '&gt;')
-              .replace(/&/g, '&amp;').replace(/"/g, '&quot;')
-          + '</pre>'
-        : 'Sorry, an error occurred.'
-      );
-      console.log(err.stack || err + '');
-    }
-  };
-  (req.next = res.next = next)();
-};
-
 // mount an app, will route to the apps router
 // mounted apps shouldn't have a listener or internal stack
 Application.prototype.mount = function(route, app) {
   app._parent = this;
-  app.__route = route = '/' + route.replace(/^\/|\/$/g, '');
+  app._route = route = '/' + route.replace(/^\/|\/$/g, '');
   var len = route.length, slots = route.split('/').length - 1;
   this.route(route + '*', function(req, res) {
+    //if (req.pathname.indexOf(route) === 0)
+    // maybe check for favicon here?
     req.app = res.app = app;
-    req.__url = req.url;
-    req.url = req.url.replace(route, '') || '/'; 
+    req._url = req.url;
+    req.url = req.url.replace(route, ''); 
     
-    // an insane hack to account for absolute urls.
-    // absolute urls almost never get sent on the request line
-    // but they CAN be according to the rfc
-    if (/^([^:\/]+:)?\/\/[^\/]+$/.test(req.url)) req.url += '/';
+    // fix for absolute urls and 
+    // relative urls that become ''
+    if (req.url.charAt(0) !== '/') req.url += '/';
     
-    req.uri.pathname = req.pathname = req.pathname.slice(len) || '/';
+    req.pathname = req.pathname.slice(len) || '/';
     req.path = req.path.slice(slots); 
-    app._listener(req, res);
-    // could do app.server.emit('request', req, res);
-    // that way we could use closure pattern and make
-    // the listener actually private instead...
+    // pass to the child app's router
+    app._router(req, res);
   });
 };
 
@@ -181,11 +151,11 @@ Application.prototype.vhost = function(host, app) {
     if (req.host.indexOf(host) === 0) {
       req.app = res.app = app;
       // hacky way to update the app's host
-      if (!('__host' in app)) {
-        app.__host = app.host;
+      if (!('_host' in app)) {
+        app._host = app.host;
         app.host = req.host;
       }
-      app._listener(req, res);
+      app._router(req, res);
     } else {
       next();
     }
@@ -271,7 +241,7 @@ Response.prototype.send = function(file, func) {
     return res.error(500);
   }
   if (file.indexOf('..') !== -1) {
-    return res.error(404);
+    return res.error(403);
   }
   if (file.charAt(0) !== '/') {
     file = app.cfg.root + '/' + file;
@@ -340,11 +310,14 @@ Response.prototype.send = function(file, func) {
 // if a stale response was sent as a result
 Response.prototype.modified = function(base) {
   if (DEVELOPMENT) return;
-  base = new Date(base);
+  if (!this.req.modified) {
+    var modified = new Date(this.req.headers['if-modified-since']);
+    if (!isNaN(modified)) this.req.modified = modified;
+  }
+  base = new Date(base); // maybe use a flat int here
   this.setHeader('Last-Modified', base.toISOString());
   if (this.req.modified && (base.getTime() === this.req.modified.getTime())) {
     this.error(304); 
-    if (this.app.cfg.halt) this.halt();
     return true;
   }
 };
@@ -352,13 +325,63 @@ Response.prototype.modified = function(base) {
 // ETags, can be weak - will prefix with "W/"
 Response.prototype.etag = function(etag, weak) {
   if (DEVELOPMENT) return;
+  if (!this.req.etag && this.req.headers['if-none-match']) {
+    this.req.etag = this.req.headers['if-none-match'].replace(/^W\/|["']/gi, '');
+  }
   etag = etag.replace(/^W\/|['"]/gi, '');
   weak = weak ? 'W/' : '';
   this.setHeader('ETag', weak + '"' + etag + '"');
   if (this.req.etag && (etag === this.req.etag)) {
     this.error(304); 
-    if (this.app.cfg.halt) this.halt();
     return true;
+  }
+};
+
+// cache control - work in progress
+Response.prototype.cache = function(opt) {
+  var control = [];
+  if (opt === false) {
+    opt = { cache: false, expires: 0 };
+  } else if (!opt || opt === true) {
+    opt = { privacy: 'public', expires: 2 * 60 * 60 * 1000 };
+  }
+  opt.maxage = opt.maxage || opt.maxAge || opt.expires;
+  if (opt.privacy) { // 'private' or 'public'
+    control.push(opt.privacy);
+  }
+  if (opt.cache === false) { 
+    control.push('no-cache');
+  }
+  if (opt.store === false) {
+    control.push('no-store');
+  }
+  if (opt.transform === false) {
+    control.push('no-transform');
+  }
+  if (opt.revalidate) { // 'must' or 'proxy'
+    control.push(opt.revalidate === true ? 'must' : opt.revalidate);
+  }
+  if (opt.maxage != null) {
+    if (opt.revalidate === 'proxy') {
+      control.push('s-maxage=' + opt.maxage); 
+    } else {
+      control.push('max-age=' + opt.maxage);
+    }
+  }
+  this.setHeader('Cache-Control', control.join(', '));
+  // http 1.0 doesnt support cache-control, 
+  // only "expires" and "pragma"
+  if (this.req.httpVersionMinor < 1) {
+    if (opt.cache === false) {
+      this.setHeader('Pragma', 'no-cache');
+    }
+    if (opt.maxage != null) {
+      // invalid values such as zero expire instantly
+      this.setHeader('Expires', opt.maxage 
+        ? new Date(Date.now() + opt.maxage).toUTCString() 
+        : '0'
+      );
+    }
   }
 };
 
@@ -379,7 +402,7 @@ Response.prototype.redirect = function(path, code) {
   if (!code) code = 303;
   if (path.indexOf('//') === -1) {
     path = app.url 
-      + (app.__route || '') + '/' 
+      + (app._route || '') + '/' 
       + path.replace(/^\/+/, '');
   }
   // http 1.0 user agents don't understand 303's:
@@ -399,19 +422,18 @@ Response.prototype.redirect = function(path, code) {
 };
 
 // send an http error code with an optional body
-Response.prototype.error = function(code, body) {
+Response.prototype._error = function(code, body, unsafe) {
   var res = this, app = res.app;
   if (res.finished) return;
   res.statusCode = code = +code || 500;
   // make sure its not a 304 (not modified) or 204 (no content)
   // these response codes should not have a body
   if (code !== 204 && code !== 304 && code > 199) {
-    if (app && app.cfg.error) {
+    if (app.cfg.error && unsafe) {
       var err = new Error(body || http.STATUS_CODES[code]);
       err.name = http.STATUS_CODES[code];
       err.code = code;
-      err = [err].concat(_slice.call(arguments, 2));
-      return app.cfg.error.apply(res, err);
+      return app.cfg.error.call(res, err, body);
     }
     body = '<!doctype html>\n<title>Error</title>\n'
            + '<h1>' + http.STATUS_CODES[code] + '</h1>\n' 
@@ -430,6 +452,11 @@ Response.prototype.error = function(code, body) {
     body = undefined;
   }
   res.end(body); 
+};
+
+Response.prototype.halt = 
+Response.prototype.error = function(code, body) {
+  return this._error(code, body, true);
 };
 
 // cookie with options, path defaults to '/'
@@ -587,19 +614,19 @@ var router = (function() {
     });
     
     // do a route lookup to retrieve handlers
-    return function lookup(req) { 
-      if (!routes[req.method]) return;
+    var lookup = function(req) { 
+      var _routes = routes[req.method];
+      if (!_routes) return;
       
-      req.uri = req.uri || url.parse(req.url);
       req.params = {};
       
       var route, cap, 
-          uri = req.uri.pathname, handlers = [],
-          i = 0, l = routes[req.method].length;
+          path = req.pathname, handlers = [],
+          i = 0, l = _routes.length;
       
       for (; i < l; i++) {
-        route = routes[req.method][i];
-        if (!route.path || (cap = uri.match(route.regex))) {
+        route = _routes[i];
+        if (!route.path || (cap = path.match(route.regex))) {
           if (cap) cap.slice(1).forEach(function(v, i) {
             req.params[route.index[i]] = v;
           });
@@ -608,8 +635,54 @@ var router = (function() {
       }
       return handlers;
     };
+    
+    return function(req, res) {
+      var app = this, i = 0, 
+          stack = lookup(req);
+      if (!stack) { 
+        return res.error(405); 
+      } else if (!stack.length) {
+        return res.error(404); 
+      }
+      var next = function() { 
+        try {
+          if (stack[i]) {
+            stack[i++].apply(app, [req, res].concat(_slice.call(arguments)));
+          } else {
+            throw new 
+              Error('Bottom of stack, no handler.');
+          }
+        } catch(err) {
+          res.error(500, DEVELOPMENT 
+            ? '<pre>' 
+              + (err.stack || err + '')
+                  .replace(/</g, '&lt;').replace(/>/g, '&gt;')
+                  .replace(/&/g, '&amp;').replace(/"/g, '&quot;')
+              + '</pre>'
+            : 'Sorry, an error occurred.'
+          );
+          console.log(err.stack || err + '');
+        }
+      };
+      (req.pass = res.pass = req.next = res.next = next)();
+    };
   };
 })();
+
+// drop the req and res down the middleware 
+// chain, then pass control to the router
+var listener = function(app) {
+  return function(req, res) {
+    var i = 0;
+    (function next() {
+      if (__stack[i]) {
+        __stack[i++].call(app, req, res, next);
+      } else {
+        app._router(req, res);
+      }
+    })();
+  };
+};
 
 // ========== MIDDLEWARE ========== //
 // - the internal middleware stack
@@ -625,21 +698,34 @@ var __stack = exports.stack = [
   },
   // ========== BASIC ========== //
   function basic(req, res, next) {
-    req.pathname = req.uri.pathname;
+    var uri = url.parse(req.url);
+    req.pathname = qs.unescape(uri.pathname, true);
+    
+    // cache the favicon and skip to routing
+    if (req.pathname === '/favicon.ico') {
+      res.setHeader('Cache-Control', 'public, max-age=14400');
+      // http 1.0 agents dont support cache-control
+      // http://www.w3.org/Protocols/rfc2616/rfc2616-sec14.html#sec14.9
+      if (req.httpVersionMinor < 1) {
+        res.setHeader('Expires', new Date(Date.now() + 14400).toUTCString());
+      }
+      //return this._router(req, res);
+    }
+    
     req.path = (function() {
-      var path = (req.pathname || '').trim()
+      var path = (uri.pathname || '').trim()
         .replace(/^\/|\/$/g, '').split('/');
       if (!path[0]) return [];
       return path.map(function(v) {
-        return qs.unescape(v.trim(), true); 
+        return qs.unescape(v, true); 
       });
     })();
     
-    req.host = req.uri.hostname 
+    req.host = uri.hostname 
       || (req.headers.host || '').split(':')[0] 
       || this.host;
     
-    req.query = qs.parse(req.uri.query, '&');
+    req.query = qs.parse(uri.query, '&');
     
     req.cookies = {};
     if (req.headers.cookie) {
@@ -655,13 +741,6 @@ var __stack = exports.stack = [
       req.type = type[0].trim();
       if (type[1]) req.charset = (type[1].split('=')[1] || '').trim();
     }
-    
-    if (req.headers['if-none-match']) {
-      req.etag = req.headers['if-none-match'].replace(/^W\/|["']/gi, '');
-    }
-    
-    var modified = new Date(req.headers['if-modified-since']);
-    if (!isNaN(modified)) req.modified = modified;
     
     // maybe move these to getters
     req.xhr = !!(req.headers['x-requested-with'] === 'XMLHttpRequest');
@@ -682,9 +761,11 @@ var __stack = exports.stack = [
       }
     }).on('error', function(err) {
       if (!err) {
-        res.error(413); // request entity too large
+        // request entity too large
+        res.error(413); 
       } else {
-        res.error(400); // bad request
+        // bad request
+        res.error(400); 
       }
       this.destroy();
     }).on('end', function() {
@@ -707,31 +788,8 @@ var __stack = exports.stack = [
   }
 ];
 
-// ========== HALT & PASS ========== //
-var __break = {};
-'type,stack,name,message,code,errno,toString,inspect'.split(',').forEach(function(s) {
-  __break.__defineGetter__(s, function() { throw this; });
-});
-
-Response.prototype.halt = function(err) {
-  if (err) { 
-    this.error(err);
-  } else {
-    if (!this.finished) {
-      this.end();
-    }
-  }
-  throw __break;
-};
-
-Response.prototype.pass = function() {
-  this.next();
-  throw __break;
-};
-
+// dont crash on exception
 process.on('uncaughtException', function(err) {
-  if (err === __break) return; // do nothing
-  // restore default behavior
   console.log(err.stack || err + '');
   if (DEVELOPMENT) process.exit(1);
 });
@@ -799,24 +857,20 @@ var mime = (function() {
 })();
 
 // ========== SESSIONS ========== //
-exports.sessions = function(opt) {
+var sessions = function(opt) {
   if (typeof opt !== 'object') {
     opt = {};
   }
-  
   var total = 0,
       life = opt.life || 2 * 7 * 24 * 60 * 60 * 1000, 
       limit = opt.limit || 500,
       dir = opt.dir || __dirname + '/.sessions';
-  
   // check for the .sessions dir
   if (!require('path').existsSync(dir)) {
     fs.mkdirSync(dir, 0666);
   }
-  
   total = fs.readdirSync(dir).length;
-  
-  return function(req, res, next) {
+  return function(req, res) {
     if (total > limit) { 
       fs.readdir(dir, function(err, list) {
         if (err || !list) return; 
@@ -855,7 +909,7 @@ exports.sessions = function(opt) {
       });
       res.cookie('sid', id, {expires: life});
       req.session = {};
-      return next();
+      return res.next();
     }
     
     fs.readFile(dir + '/' + id, 'utf-8', function(err, data) {
@@ -864,7 +918,7 @@ exports.sessions = function(opt) {
       } catch(e) {
         req.session = {};
       }
-      next();
+      res.next();
     });
   };
 };
@@ -924,7 +978,6 @@ View.prototype = {
     if (loc) for (var k in loc) {
       this.locals[k] = loc[k];
     }
-    this.locals.partial = this._app.partial.bind(this._app);
     var i = this._chain.length;
     while (i--) {
       this.locals.body = this._app._compile(this._chain[i])(this.locals); 
@@ -939,8 +992,7 @@ Response.prototype.__defineGetter__('view', function() {
     var res = this;
     this._view = new View(this.app);
     this._view.render = function() {
-      var out = res._view.show.apply(res._view, arguments);
-      return res.serve(out);
+      return res.serve(res._view.show.apply(res._view, arguments));
     };
   }
   return this._view;
@@ -953,40 +1005,22 @@ Response.prototype.__defineGetter__('render', function() {
 
 // we could do the "inherits" declarations slightly
 // differently, but regexes seem to work on all engines
-Application.prototype._compile = (function() {
-  var _inherits = function() { 
-    return _slice.call(arguments).map(function(name) {
-      return '--' + 'inherits ' + name + '--';
-    }).join(' ');
-  };
-  return function(name) {
-    var app = this;
-    if (!app._views) {
-      app._views = (app.cfg.views || app.cfg.root)
-        .replace(/\/+$/, '') + '/';
-    }
-    if (!app._cache) app._cache = {};
-    // add template inheritence functionality 
-    // by doing some parsing post-compilation
-    if (!app._cache[name]) {
-      var func = app.cfg.template(fs.readFileSync(app._views + name, 'utf-8'));
-      app._cache[name] = function(locals) {
-        if (!locals.inherits) locals.inherits = _inherits;
-        var out = func(locals), parent = [];
-        out = out.replace(/\s*--\s*inherits\s*([^\n]+?)\s*--[\t\x20]*[\r\n]*/gi, function(__, name) {
-          parent.push(name);
-          return '';
-        });
-        while (parent.length) {
-          locals.body = out;
-          out = app._compile(parent.pop())(locals); 
-        }
-        return out;
-      };
-    }
-    return app._cache[name];
-  };
-})();
+Application.prototype._compile = function(name) {
+  var app = this;
+  if (!this._views) {
+    this._views = (this.cfg.views || this.cfg.root)
+      .replace(/\/+$/, '') + '/';
+  }
+  if (!this._cache) this._cache = {};
+  if (!this._cache[name]) {
+    var func = this.cfg.template(fs.readFileSync(this._views + name, 'utf-8'));
+    this._cache[name] = function(locals) {
+      if (!locals.partial) locals.partial = app.partial.bind(app);
+      return func(locals);
+    };
+  }
+  return this._cache[name];
+};
 
 Application.prototype.partial = 
 Application.prototype.render = 

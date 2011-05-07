@@ -1,6 +1,11 @@
 # Vanilla - a framework for Node
 __Vanilla__ is another Sinatra-like framework. This is an early release, 
-with polishing yet to be done. Things will change periodically.
+with polishing yet to be done. Things will change periodically. (note: This 
+is also my personal framework. I wrote it mostly for myself, it is tailored 
+to my specific needs.)
+
+__NOTE:__ This documentation may be slightly out of date. I've been changing 
+a lot around and haven't had time to document it all.
 
 ## Install
 
@@ -227,11 +232,17 @@ Or you can pass in an options object:
 A user's session will get written to disk after 2 minutes of inactivity.
 (I'm still uncertain how this will be done, it may change slightly.)
 
+The session object is acessible from `req.session`.
+
+Just a warning: the session IDs used are not necessarily cryptographically 
+strong. It doesn't make use of the crypto module due to talk of it being 
+removed from core soon.
+
 #### Why use the filesystem?
 
 Because some projects don't necessarily need a database, and using a database 
 for sessions alone seems a little like overkill, ...like using a sledge hammer 
-to peel an orange. 
+to peel an orange.
 
 ### .halt and .pass
 
@@ -289,9 +300,11 @@ In this example, `res.modified` will set the `Last-Modified` header to the
 time(ms) or `Date` that was passed in. If the client sent an `If-Modified-Since` 
 header equivalent to the time passed into `res.modified`, it will automatically 
 break out of the handler via `res.halt`, calling `res.halt(304)`, in turn 
-responding with a `304 Not Modified`.
+responding with a `304 Not Modified`. (There is a `res.etag` counterpart 
+for ETags.)
 
-There is also a `res.etag` counterpart for ETags.
+There is also a `res.cache` function which sets the `Cache-Control` header. 
+To be documented.
 
 ## Mounting and virtual hosting:
     
@@ -323,6 +336,8 @@ to make them more usable. Much of which is documented below.
 ## Full API List:
 - `new Application([options, func, ...])` - `options` is an HTTPS options object, 
   `func` is any number of `.route` handlers. 
+- `Application::config([env], func)` - Configure based on environment, similar 
+  to Sinatra's `configure`.
 - `Application::set(option, val)`
   Can be used to configure settings:
   - `error`: A custom error handler. Called as a result of res.error(). 
@@ -339,6 +354,7 @@ to make them more usable. Much of which is documented below.
     will send a 304 and return true. `if (res.etag(time)) return;`. 
     True by default.
   - `sessions`: Enable sessions.
+  - `static`: Set the static/public directory to serve files from.
   - Anything else, accessible from `app.cfg`.
 - `Application::vhost(host, app)` 
 - `Application::mount(route, app)`
@@ -387,6 +403,8 @@ to make them more usable. Much of which is documented below.
   `.halt(304)` if it matches the req `If-Modified-Since`.
 - `Response::attach([file, func])` - The same thing as `.send`, but it sets the 
   `Content-Disposition` header to `attachment`. Callback on complete.
+- `Response::cache(...)` - Set the `Cache-Control` header. Can take an 
+  options object or `true`/`false`. To be documented.
 - `Response::halt([code])` - Immediately exit the current handler and 
   optionally respond with an http error.
 - `Response::pass()` - Immediately exit the current handler and pass control 
@@ -399,6 +417,7 @@ to make them more usable. Much of which is documented below.
 - `Request::header(name)` - Get a request header, referer will fallback to the 
   app's url, otherwise the empty string.
 - `Request::cookie(name)` - Get a cookie, fallback to the empty string.
+- `Request::session` - The request's session object.
 - `Request::path` - The request path in an array, e.g. [ 'path', 'to', ... ]
 - `Request::pathname` - The request path.
 - `Request::etag` - The request's `If-None-Match` header stripped of quotes.
