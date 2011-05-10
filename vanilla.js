@@ -133,6 +133,7 @@ Application.prototype.mount = function(route, app) {
     
     // fix for absolute urls and 
     // relative urls that become ''
+    // not perfect for relative protocol urls
     if (req.url.charAt(0) !== '/') req.url += '/';
     
     req.pathname = req.pathname.slice(len) || '/';
@@ -157,7 +158,7 @@ Application.prototype.vhost = function(host, app) {
       }
       app._router(req, res);
     } else {
-      res.next();
+      res.pass();
     }
   });
 };
@@ -310,7 +311,7 @@ Response.prototype.send = function(file, func) {
 // if a stale response was sent as a result
 Response.prototype.modified = function(base) {
   if (DEVELOPMENT) return;
-  if (!this.req.modified) {
+  if (!this.req.modified && this.req.headers['if-modified-since']) {
     var modified = new Date(this.req.headers['if-modified-since']);
     if (!isNaN(modified)) this.req.modified = modified;
   }
@@ -341,9 +342,9 @@ Response.prototype.etag = function(etag, weak) {
 Response.prototype.cache = function(opt) {
   var control = [];
   if (opt === false) {
-    opt = { cache: false, expires: 0 };
+    opt = { cache: false, expires: 0, revalidate: true };
   } else if (!opt || opt === true) {
-    opt = { privacy: 'public', expires: 2 * 60 * 60 * 1000 };
+    opt = { privacy: 'public', expires: arguments[1] || 2 * 60 * 60 * 1000 };
   }
   opt.maxage = opt.maxage || opt.maxAge || opt.expires;
   if (opt.privacy) { // 'private' or 'public'
@@ -429,7 +430,7 @@ Response.prototype._error = function(code, body, unsafe) {
   // make sure its not a 304 (not modified) or 204 (no content)
   // these response codes should not have a body
   if (code !== 204 && code !== 304 && code > 199) {
-    if (app.cfg.error && unsafe) {
+    if (app && app.cfg.error && unsafe) {
       var err = new Error(body || http.STATUS_CODES[code]);
       err.name = http.STATUS_CODES[code];
       err.code = code;
@@ -588,9 +589,8 @@ var router = (function() {
         path = args.shift();
       }
       // hacky way to allow arrays to be input
-      args.map(function(val) {
+      args.forEach(function(val) {
         handlers = handlers.concat(val);
-        return null;
       });
       route = compile(path, handlers);
       if (!method) {
@@ -656,8 +656,8 @@ var router = (function() {
           res.error(500, DEVELOPMENT 
             ? '<pre>' 
               + (err.stack || err + '')
-                  .replace(/</g, '&lt;').replace(/>/g, '&gt;')
                   .replace(/&/g, '&amp;').replace(/"/g, '&quot;')
+                  .replace(/</g, '&lt;').replace(/>/g, '&gt;')
               + '</pre>'
             : 'Sorry, an error occurred.'
           );
@@ -701,7 +701,7 @@ var __stack = exports.stack = [
     var uri = url.parse(req.url);
     req.pathname = qs.unescape(uri.pathname, true);
     
-    // cache the favicon and skip to routing
+    // cache the favicon
     if (req.pathname === '/favicon.ico') {
       res.setHeader('Cache-Control', 'public, max-age=14400');
       // http 1.0 agents dont support cache-control
@@ -709,7 +709,6 @@ var __stack = exports.stack = [
       if (req.httpVersionMinor < 1) {
         res.setHeader('Expires', new Date(Date.now() + 14400).toUTCString());
       }
-      //return this._router(req, res);
     }
     
     req.path = (function() {
@@ -872,13 +871,12 @@ var sessions = function(opt) {
   total = fs.readdirSync(dir).length;
   return function(req, res) {
     if (total > limit) { 
+      total = 0;
       fs.readdir(dir, function(err, list) {
-        if (err || !list) return; 
-        list.forEach(function(id) {
+        if (!err) list.forEach(function(id) {
           fs.unlink(dir + '/' + id);
         });
       });
-      total = 0;
     }
     
     var id = req.cookies.sid;
@@ -890,26 +888,30 @@ var sessions = function(opt) {
         res.end = _end;
         fs.writeFile(
           dir + '/' + id, 
-          JSON.stringify(req.session), 
-          function(err) {
-            res.end.apply(res, args);
-          }
+          JSON.stringify(req.session || {}), 
+          function() { _end.apply(res, args); }
         );
-        // could call .write here to get an accurate 
-        // return, but it has some problems
         return true;
       };
     })();
     
     if (!id) {
-      total++;
+      ++total;
       // warning: not cryptographically strong
-      id = '----'.replace(/-/g, function() {
-        return Math.random().toString(36).slice(2, 10);
-      });
+      //id = '----'.replace(/-/g, function() {
+      //  return Math.random().toString(36).slice(2, 10);
+      //});
+      
+      // cheap way to get decent randomness, seed with the ip address
+      id = _slice.call(res.socket.remoteAddress).sort(function() {
+        return Math.random() > .5 ? 1 : -1;
+      }).map(function(ch) {
+        return (ch.charCodeAt(0) * Math.random()).toString(36).slice(3);
+      }).join('').slice(0, 32);
+      
       res.cookie('sid', id, {expires: life});
       req.session = {};
-      return res.next();
+      return res.pass();
     }
     
     fs.readFile(dir + '/' + id, 'utf-8', function(err, data) {
@@ -918,7 +920,7 @@ var sessions = function(opt) {
       } catch(e) {
         req.session = {};
       }
-      res.next();
+      res.pass();
     });
   };
 };
@@ -1008,8 +1010,7 @@ Response.prototype.__defineGetter__('render', function() {
 Application.prototype._compile = function(name) {
   var app = this;
   if (!this._views) {
-    this._views = (this.cfg.views || this.cfg.root)
-      .replace(/\/+$/, '') + '/';
+    this._views = this.cfg.views.replace(/\/+$/, '') + '/';
   }
   if (!this._cache) this._cache = {};
   if (!this._cache[name]) {
