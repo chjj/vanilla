@@ -3,5 +3,5 @@
   "description": "a sinatra-like framework with some batteries included",
   "author": "Christopher Jeffrey",
   "version": "0.0.1",
-  "main": "./vanilla.js"
+  "main": "./lib/vanilla.js"
 }

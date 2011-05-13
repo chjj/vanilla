@@ -3,7 +3,7 @@
 // down and made into a module
 var assert = require('expresso-mod');
 
-var vanilla = require('./vanilla'); 
+var vanilla = require('./'); 
 
 var app = vanilla.listen(8000);
 var app2 = new vanilla;
