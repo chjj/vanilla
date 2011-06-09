@@ -1,1 +1,0 @@
-var Vanilla = require('../');var app = Vanilla.listen(8080);app.set('sessions', true);app.get('/', function(req, res, next) {  res.serve('hello world <a href="/test">click here</a>');});app.get('/test', function(req, res, next) {  res.serve('hello again <a href="/">click here</a>');});
