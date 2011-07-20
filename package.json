@@ -1,7 +1,7 @@
 {
   "name": "vanilla",
-  "description": "a sinatra-like framework with some batteries included",
+  "description": "a framework",
   "author": "Christopher Jeffrey",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "main": "./lib/vanilla.js"
 }
