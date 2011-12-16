@@ -3,5 +3,6 @@
   "description": "a framework",
   "author": "Christopher Jeffrey",
   "version": "0.0.4",
-  "main": "./lib/vanilla.js"
+  "main": "./lib/vanilla.js",
+  "dependencies": { "parted": "*" }
 }
