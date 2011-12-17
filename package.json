@@ -2,7 +2,7 @@
   "name": "vanilla",
   "description": "a framework",
   "author": "Christopher Jeffrey",
-  "version": "0.0.4",
+  "version": "0.0.5",
   "main": "./lib/vanilla.js",
   "dependencies": { "parted": "*" }
 }
